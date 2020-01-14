@@ -218,15 +218,16 @@ class Attention(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, encode_dim, decode_dim,
+    def __init__(self, embedding_dim, encode_dim, decode_dim,
                  output_dim, dropout, pretrained_weight, attention):
         super().__init__()
         self.num_layers=1
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.embedding = nn.Embedding(output_dim, embedding_dim)
         self.dropout = nn.Dropout(dropout)
         self.attention = attention
+        self.decode_dim = decode_dim
         self.rnn = nn.GRU((encode_dim * 2) + embedding_dim,
-                          decode_dim,
+                          self.decode_dim,
                           batch_first=True)
         self.fc_out = nn.Linear((encode_dim * 2) + decode_dim + embedding_dim,
                                 output_dim)
@@ -243,18 +244,18 @@ class Decoder(nn.Module):
             if isinstance(self.rnn, nn.LSTM):
                 h0 = Variable(
                     torch.zeros(self.num_layers, self.batch_size,
-                                self.hidden_dim).cuda())
+                                self.decode_dim ).cuda())
                 c0 = Variable(
                     torch.zeros(self.num_layers, self.batch_size,
-                                self.hidden_dim).cuda())
+                                self.decode_dim).cuda())
                 return h0, c0
             return Variable(
                 torch.zeros(self.num_layers, self.batch_size,
-                            self.hidden_dim)).cuda()
+                            self.decode_dim)).cuda()
         else:
             return Variable(
                 torch.zeros(self.num_layers, self.batch_size,
-                            self.hidden_dim))
+                            self.decode_dim))
 
     def forward(self, input, hidden, encoder_outputs, mask):
         # input = [batch]
