@@ -2,7 +2,7 @@ import pandas as pd
 import os
 from nltk import word_tokenize
 import xml.etree.ElementTree as ET
-
+import numpy as np
 
 class Pipeline:
     def __init__(self, root):
@@ -45,12 +45,22 @@ class Pipeline:
         # code
         w2v_code = Word2Vec(code_corpus, size=self.identifier_dim_size,
                             workers=8, sg=1, min_count=3, window=5, max_final_vocab=self.max_identifier_voc_size)
+        identifier_embeddings=w2v_code.syn0 
+        identifier_voc=w2v_code.vocab
+
         w2v_code.save(os.path.join(
             self.root, 'identifier_w2v_'+str(self.identifier_dim_size)))
 
         # comment
         w2v_comment = Word2Vec(comment_corpus, size=self.token_dim_size,
                                workers=8, sg=1, min_count=3, window=5, max_final_vocab=self.max_token_voc_size)
+        # add entity
+        wv=w2v_comment.wv
+        embedding_size=wv.syn0.shape[1]
+        entities=["<sos>","<eos>","<pad>"]
+        weights=np.random.normal(size=(len(entities),embedding_size))
+        wv.add(entities=entities,weights=weights,replace=False)
+
         w2v_comment.save(os.path.join(
             self.root, 'token_w2v_'+str(self.token_dim_size)))
 
