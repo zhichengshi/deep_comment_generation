@@ -9,7 +9,7 @@ from nltk.corpus import wordnet
 from nltk.stem import WordNetLemmatizer
 import pandas as pd
 
-class pipeline:
+class preprocess:
 
     def __init__(self, srcJsonPath, xmlCommentPath):
         self.srcJsonPath = srcJsonPath
@@ -133,5 +133,5 @@ class pipeline:
 if __name__ == "__main__":
     srcJsonPath = "C:\\Users\\w\\Desktop\\temp\\train.json"
     xmlCommentJsonPath = "C:\\Users\\w\\Desktop\\temp\\xmlComment\\train.json"
-    ppl = pipeline(srcJsonPath, xmlCommentJsonPath)
+    ppl = preprocess(srcJsonPath, xmlCommentJsonPath)
     ppl.xmlComment()

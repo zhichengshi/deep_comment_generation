@@ -4,28 +4,27 @@ from nltk import word_tokenize
 import xml.etree.ElementTree as ET
 import numpy as np
 
+
 class Pipeline:
-    def __init__(self, root):
+    def __init__(self, root, part, identifier_dim_size, token_dim_size, max_identifier_voc_size=100000, max_token_voc_size=100000):
         self.root = root
-        self.sources = None
-        self.train_file_path = None
-        self.dev_file_path = None
-        self.test_file_path = None
-        self.identifier_dim_size = None
-        self.token_dim_size = None
-        self.max_identifier_voc_size = 100000
-        self.max_token_voc_size = 100000
+        self.part = part
+        self.identifier_dim_size = identifier_dim_size
+        self.token_dim_size = token_dim_size
+        self.max_identifier_voc_size = max_identifier_voc_size
+        self.max_token_voc_size = max_token_voc_size
 
     # construct dictionary and train word embedding
-    def dictionary_and_embedding(self, input_file, output_file, size,):
-        self.size = size
-        if not input_file:
-            input_file = self.train_file_path
+    def dictionary_and_embedding(self, input_file):
+
+        part = self.part
+
         trees = pd.read_json(input_file)
 
         from prepare_data import get_ast_sequences
 
         def trans_to_sequence(ast):
+            ast=ET.fromstring(ast)
             sequnece = []
             get_ast_sequences(ast, sequnece)
             return sequnece
@@ -34,54 +33,64 @@ class Pipeline:
         code_corpus = trees['code'].apply(trans_to_sequence)
         code_corpus_str = [' '.join(code) for code in code_corpus]
         trees['code'] = pd.Series(code_corpus_str)
+
         # comment sequence
         comment_corpus = trees['comment'].apply(word_tokenize)
         comment_corpus_str = [' '.join(comment) for comment in comment_corpus]
         trees['comment'] = pd.Series(comment_corpus_str)
-        # dump
-        trees.to_json(os.path.join(self.root, "programs_ns.json"))
 
+        # dump
+        if not os.path.exists(os.path.join(self.root,part)):
+            os.makedirs(os.path.join(self.root,part))
+        trees.to_json(os.path.join(self.root, part, "programs_ns.json"))
+
+        # embedding
         from gensim.models.word2vec import Word2Vec
+
         # code
         w2v_code = Word2Vec(code_corpus, size=self.identifier_dim_size,
                             workers=8, sg=1, min_count=3, window=5, max_final_vocab=self.max_identifier_voc_size)
-        identifier_embeddings=w2v_code.syn0 
-        identifier_voc=w2v_code.vocab
+
+        if not os.path.exists(os.path.join(self.root.part)):
+            os.makedirs(os.path.join(self.root.part))
 
         w2v_code.save(os.path.join(
-            self.root, 'identifier_w2v_'+str(self.identifier_dim_size)))
+            self.root, part, 'identifier_w2v_'+str(self.identifier_dim_size)))
 
         # comment
         w2v_comment = Word2Vec(comment_corpus, size=self.token_dim_size,
                                workers=8, sg=1, min_count=3, window=5, max_final_vocab=self.max_token_voc_size)
         # add entity
-        wv=w2v_comment.wv
-        embedding_size=wv.syn0.shape[1]
-        entities=["<sos>","<eos>","<pad>"]
-        weights=np.random.normal(size=(len(entities),embedding_size))
-        wv.add(entities=entities,weights=weights,replace=False)
+        wv = w2v_comment.wv
+        embedding_size = wv.syn0.shape[1]
+        entities = ["<sos>", "<eos>", "<pad>"]
+        weights = np.random.normal(size=(len(entities), embedding_size))
+        wv.add(entities=entities, weights=weights, replace=False)
 
         w2v_comment.save(os.path.join(
-            self.root, 'token_w2v_'+str(self.token_dim_size)))
+            self.root, part, 'token_w2v_'+str(self.token_dim_size)))
 
     # generate block sequences with index representations
-    def generate_block_seqs(self, data_path, part):
+    def generate_block_seqs(self, data_path):
         from prepare_data import get_blocks as func
         from gensim.models.word2vec import Word2Vec
 
+        part = self.part
         # code word2vec vocabulary
-        word2vec_code = Word2Vec.load(
-            self.root, 'identifier_w2v_'+str(self.identifier_dim_size)).wv
+        word2vec_code = Word2Vec.load(os.path.join(self.root, part, 'identifier_w2v_'+str(self.identifier_dim_size))
+                                      ).wv
         vocab_code = word2vec_code.vocab
         identifier_max = word2vec_code.syn0.shape[0]
 
         # comment word2vec vocabulary
-        word2vec_comment = Word2Vec.load(
-            self.root, 'token_w2v_'+str(self.token_dim_size)).wv
+        word2vec_comment = Word2Vec.load(os.path.join(self.root, 'token_w2v_'+str(self.token_dim_size))
+                                         ).wv
         vocab_comment = word2vec_comment.vocab
         token_max = word2vec_comment.syn0.shape[0]
 
         def comment_to_index(comment):
+            comment.insert(0, '<sos>')
+            comment.append('<eos>')
             return [vocab_comment[token] if token in vocab_comment else token_max for token in comment]
 
         def trans2seq(code_xml):
@@ -106,4 +115,20 @@ class Pipeline:
         trees = pd.read_pickle(data_path)
         trees['code'] = trees['code'].apply(trans2seq)
         trees['comment'] = trees['comment'].apply(comment_to_index)
-        trees.to_pickle(os.path.join(self.root, part+"_block.pkl"))
+        trees.to_pickle(os.path.join(self.root, part,"block.pkl"))
+
+
+if __name__ == "__main__":
+    root = "/home/cheng/Documents/projects/deep_comment_generation/data"
+    train_path="/home/cheng/Documents/projects/deep_comment_generation/data/train.json"
+    valid_path="/home/cheng/Documents/projects/deep_comment_generation/data/valid.json"
+    test_path="/home/cheng/Documents/projects/deep_comment_generation/data/test.json"
+    part="train"
+    identifier_dim_size=128
+    token_dim_size=128
+    max_identifier_voc_size=100000
+    max_token_voc_size=100000
+    ppl=Pipeline(root,part,identifier_dim_size,token_dim_size,max_identifier_voc_size,max_token_voc_size)
+    ppl.dictionary_and_embedding(test_path)
+
+
