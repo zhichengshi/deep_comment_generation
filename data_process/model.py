@@ -264,8 +264,7 @@ class Decoder(nn.Module):
 
         input = input.unsqueeze(1)  # input = [batch,1]
 
-        embeded = self.dropout(
-            self.embedding(input))  # embed = [batch, 1, embedding_dim]
+        embeded = self.dropout(self.embedding(input))  # embed = [batch, 1, embedding_dim]
 
         a = self.attention(hidden, encoder_outputs,
                            mask)  # a = [batch, max_len]
@@ -298,11 +297,11 @@ class Decoder(nn.Module):
 
 
 class Seq2Seq(nn.Module):
-    def __init__(self, encoder, decoder, device):
+    def __init__(self, encoder, decoder, use_gpu=True):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
-        self.device = device
+        self.use_gpu = use_gpu
 
     def forward(self, src, trg, teacher_forcing_ratio=0.75):
         def create_mask(src_lens):
@@ -325,8 +324,10 @@ class Seq2Seq(nn.Module):
         trg_vocab_size = self.decoder.output_dim
 
         # tensor to store decoder output
-        outputs = torch.zeros(batch_size, trg_len,
-                              trg_vocab_size).to(self.device)
+        if self.use_gpu:
+            outputs = torch.zeros(batch_size, trg_len,
+                                trg_vocab_size).cuda()
+                                
 
         # encoder_outputs is all hidden states of the input sequence, back and forward
         # hidden is the final forward and backward hidden states, pass through a linear layer
