@@ -107,7 +107,7 @@ def epoch_time(start, end):
 if __name__ == "__main__":
 
     root = './data'
-    train_data = pd.read_pickle(os.path.join(root, "train", "block.pkl"))
+    train_data = pd.read_pickle(os.path.join(root, "test", "block.pkl"))
     val_data = pd.read_pickle(os.path.join(root, "valid", "block.pkl"))
     test_data = pd.read_pickle(os.path.join(root, "test", "block.pkl"))
 
@@ -142,6 +142,9 @@ if __name__ == "__main__":
     attn = Attention(ENCODE_DIM, DEC_RNN_HID_DIM)
     decoder = Decoder(TRG_EMBEDDING_SIZE, ENCODE_DIM, DEC_RNN_HID_DIM, TRG_VOC_SIZE, OUTPUT_DROPOUT, token_embeddings, attn)
     model = Seq2Seq(encoder, decoder, USE_GPU)
+    
+    if USE_GPU:
+        model.cuda()
 
     optimizer = optim.Adam(model.parameters())
     criterion = nn.CrossEntropyLoss(ignore_index=TRG_PAD_IDX)

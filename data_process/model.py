@@ -5,6 +5,7 @@ from torch.autograd import Variable
 import numpy as np
 import random
 
+
 class BatchTreeEncoder(nn.Module):
     def __init__(self,
                  vocab_size,
@@ -63,10 +64,8 @@ class BatchTreeEncoder(nn.Module):
             else:
                 batch_index[i] = -1
 
-        batch_current = self.W_c(
-            batch_current.index_copy(
-                0, Variable(self.th.LongTensor(index)),
-                self.embedding(Variable(self.th.LongTensor(current_node)))))
+            batch_current = self.W_c(batch_current.index_copy(0, Variable(self.th.LongTensor(index)),
+                                                          self.embedding(Variable(self.th.LongTensor(current_node)))).cuda())
 
         for c in range(len(children)):
             zeros = self.create_tensor(
@@ -218,33 +217,30 @@ class Attention(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, embedding_dim, encode_dim, decode_dim,
-                 output_dim, dropout, pretrained_weight, attention):
+    def __init__(self, embedding_dim, encode_dim, decode_dim, output_dim, dropout, pretrained_weight, attention):
         super().__init__()
-        self.num_layers=1
-        self.embedding = nn.Embedding(output_dim, embedding_dim)
-        self.dropout = nn.Dropout(dropout)
+        self.num_layers = 1
+        self.output_dim = output_dim
         self.attention = attention
         self.decode_dim = decode_dim
-        self.rnn = nn.GRU((encode_dim * 2) + embedding_dim,
-                          self.decode_dim,
-                          batch_first=True)
-        self.fc_out = nn.Linear((encode_dim * 2) + decode_dim + embedding_dim,
-                                output_dim)
+
+        self.embedding = nn.Embedding(output_dim, embedding_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.rnn = nn.GRU((encode_dim * 2) + embedding_dim, self.decode_dim, batch_first=True)
+        self.fc_out = nn.Linear((encode_dim * 2) + decode_dim + embedding_dim, output_dim)
 
         # pretrained  embedding
         if pretrained_weight is not None:
             self.embedding.weight.data.copy_(
                 torch.from_numpy(pretrained_weight))
             self.embedding.weight.requires_grad = True
-    
 
     def init_hidden(self):
         if self.gpu is True:
             if isinstance(self.rnn, nn.LSTM):
                 h0 = Variable(
                     torch.zeros(self.num_layers, self.batch_size,
-                                self.decode_dim ).cuda())
+                                self.decode_dim).cuda())
                 c0 = Variable(
                     torch.zeros(self.num_layers, self.batch_size,
                                 self.decode_dim).cuda())
@@ -266,32 +262,23 @@ class Decoder(nn.Module):
 
         embeded = self.dropout(self.embedding(input))  # embed = [batch, 1, embedding_dim]
 
-        a = self.attention(hidden, encoder_outputs,
-                           mask)  # a = [batch, max_len]
+        a = self.attention(hidden, encoder_outputs, mask)  # a = [batch, max_len]
+
         a = a.unsqueeze(1)  # a = [batch, 1, max_len]
 
-        weighted = torch.bmm(
-            a,
-            encoder_outputs)  # weighted = [batch, 1 , encoder_hidden_dim * 2]
+        weighted = torch.bmm(a, encoder_outputs)  # weighted = [batch, 1 , encoder_hidden_dim * 2]
 
-        rnn_input = torch.cat(
-            (embeded, weighted),
-            dim=2)  # rnn_input = [batch, 1 , embedding_dim + encode_dim * 2]
+        rnn_input = torch.cat((embeded, weighted), dim=2)  # rnn_input = [batch, 1 , embedding_dim + encode_dim * 2]
 
-        output, hidden = self.rnn(
-            rnn_input, hidden.unsqueeze(1)
-        )  # output = [batch, 1, decode_dim], hidden = [batch, 1, decode_dim]
+        output, hidden = self.rnn(rnn_input, hidden.unsqueeze(1))  # output = [batch, 1, decode_dim], hidden = [batch, 1, decode_dim]
 
         assert (output == hidden).all()  # this also means that output = hidden
 
         embeded = embeded.sequeeze(1)  # embeded = [batch, embedding_dim]
         output = output.sequeeze(1)  # output = [batch, decode_dim]
-        weighted = weighted.squeeze(
-            1)  # weight = [batch, encoder_hidden_dim * 2]
+        weighted = weighted.squeeze(1)  # weight = [batch, encoder_hidden_dim * 2]
 
-        prediction = self.fc_out(torch.cat(
-            (embeded, output, weighted),
-            dim=1))  # prediction = [batch, output_dim]
+        prediction = self.fc_out(torch.cat((embeded, output, weighted), dim=1))  # prediction = [batch, output_dim]
 
         return prediction, hidden.squeeze(1), a.squeeze(1)
 
@@ -317,23 +304,20 @@ class Seq2Seq(nn.Module):
             mask = mask.reshape(len(src_lens), max_len)
             return mask
 
-        # src is not padded, the shape is not a matrix
+        # src = [batch, None]
         # trg = [batch, trg_len]
-        batch_size = len(src)[0]
-        trg_len = len(trg)[1]
+        batch_size = len(src)
+        trg_len = trg.shape[1]
         trg_vocab_size = self.decoder.output_dim
 
         # tensor to store decoder output
         if self.use_gpu:
-            outputs = torch.zeros(batch_size, trg_len,
-                                trg_vocab_size).cuda()
-                                
+            outputs = torch.zeros(batch_size, trg_len, trg_vocab_size).cuda()
 
         # encoder_outputs is all hidden states of the input sequence, back and forward
         # hidden is the final forward and backward hidden states, pass through a linear layer
 
-        encoder_outputs, hidden, src_lens = self.encoder(
-            src)  # encoder)_outputs = [batch,src_len,]
+        encoder_outputs, hidden, src_lens = self.encoder(src)  # encoder)_outputs = [batch,src_len,]
 
         # first input to decoder is the <sos> tokens
         input = trg[:, 0]  # input = [batch, 1]
@@ -342,19 +326,18 @@ class Seq2Seq(nn.Module):
 
         for t in range(1, trg_len):
             # insert input token embedding ,previous states,encoder outputs and mask
-            output, hidden, _ = self.decoder(input, hidden, encoder_outputs,
-                                             mask)
+            output, hidden, _ = self.decoder(input, hidden, encoder_outputs, mask)
             # place predictions in a tensor holding predictions for each token
             outputs[t] = output
 
             # decide if we are going to use teacher forcing or not
-            teacher_force =random.random() < teacher_forcing_ratio
+            teacher_force = random.random() < teacher_forcing_ratio
 
             # get the highest predicted token from our predictions
-            top1 =  output.argmax(1)
+            top1 = output.argmax(1)
 
             # if teacher forcing ,use actual next token as next input
             # if not ,use predicted token
             input = trg[t] if teacher_force else top1
-        
+
         return outputs
