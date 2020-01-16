@@ -34,6 +34,7 @@ def get_ast_sequences(root, sequence):  # get the ast node sequence
             sequence += split_token(root.text)
         for node in root:
             get_ast_sequences(node, sequence)
+    
 
 
 def get_blocks(root, blocks):

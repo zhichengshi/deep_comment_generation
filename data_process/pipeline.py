@@ -104,20 +104,21 @@ class Pipeline:
         part = self.part
 
         # code word2vec vocabulary
-        word2vec_code = Word2Vec.load(os.path.join(self.root, part, 'identifier_w2v_'+str(self.identifier_dim_size))
-                                      ).wv
+        word2vec_code = Word2Vec.load(os.path.join(self.root, part, 'identifier_w2v_'+str(self.identifier_dim_size))).wv
         vocab_code = word2vec_code.vocab
         identifier_max = word2vec_code.syn0.shape[0]
 
         # comment word2vec vocabulary
-        word2vec_comment = Word2Vec.load(os.path.join(self.root, part, 'token_w2v_'+str(self.token_dim_size))
-                                         ).wv
+        word2vec_comment = Word2Vec.load(os.path.join(self.root, part, 'token_w2v_'+str(self.token_dim_size))).wv
         vocab_comment = word2vec_comment.vocab
         token_max = word2vec_comment.syn0.shape[0]
 
         trees = pd.read_json(data_path)
+        trees['block_num']=[len(trans2seq(code)) for code in trees['code']] # get the number of small blocks and used to descend the row
         trees['code'] = trees['code'].apply(trans2seq)
         trees['comment'] = trees['comment'].apply(comment_to_index)
+        trees=trees.sort_values('block_num',ascending=False)
+        del trees['block_num']
         trees.to_pickle(os.path.join(self.root, part, "block.pkl"))
 
     def run(self):
@@ -130,10 +131,10 @@ if __name__ == "__main__":
     train_path = "/home/cheng/Documents/projects/deep_comment_generation/data/train.json"
     valid_path = "/home/cheng/Documents/projects/deep_comment_generation/data/valid.json"
     test_path = "/home/cheng/Documents/projects/deep_comment_generation/data/test.json"
-    part = "train" 
+    part = "test" 
     identifier_dim_size = 128
     token_dim_size = 128
     max_identifier_voc_size = 100000
     max_token_voc_size = 100000
-    ppl = Pipeline(root, part, identifier_dim_size, token_dim_size,path=train_path,max_identifier_voc_size=max_identifier_voc_size, max_token_voc_size=max_token_voc_size)
+    ppl = Pipeline(root, part, identifier_dim_size, token_dim_size,path=test_path,max_identifier_voc_size=max_identifier_voc_size, max_token_voc_size=max_token_voc_size)
     ppl.run() 

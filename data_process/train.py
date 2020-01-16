@@ -40,23 +40,41 @@ def get_batch(dataset, idx, bs, comment_pad_index):
     return code, comment
 
 
-def train(model, dataset, trg_pad_index, batch_size, optimizer, criterion, clip):
+def train(model, dataset, trg_pad_index, optimizer, criterion, clip):
+    print("start training")
     model.train()
     epoch_loss = 0
-    i = 0
+
+    start_index=10000
+    i = start_index
     while i < len(dataset):
+        if i < 100:
+            batch_size=1
+        elif i < 2000:
+            batch_size=2
+        elif i < 10000:
+            batch_size=5
+        elif i < 20000:
+            batch_size=10
+        elif i < 30000:
+            batch_size=20
+        else:
+            batch_size =60
+
         batch = get_batch(dataset, i, batch_size, trg_pad_index)
         code, comment = batch
+        i += batch_size
 
         # code = [batch, None]
         # comment =[batch, max_len]
 
         optimizer.zero_grad()
-        output = model(code, comment)  # output = [batch, max_len, output_dim]
-        output_dim = output.shape(-1)
+        output = model(code, comment)  # output = [max_len, batch, output_dim]
+        output_dim = output.shape[-1]
         # negelect the first token <sos>
-        output = output[:, 1:, :].view(-1, output_dim)
+        output = output[1:, :, :].view(-1, output_dim)
         comment = comment[:, 1:].reshape(-1)
+        comment=torch.from_numpy(comment).cuda()
 
         # output = [(max_len-1)* batch, output_dim]
         # comment = [(max_len-1)* batch]
@@ -64,24 +82,40 @@ def train(model, dataset, trg_pad_index, batch_size, optimizer, criterion, clip)
         loss = criterion(output, comment)
         loss.backward()
 
-        torch.nn.utils.clip_grad_norm(model.parameters(), clip)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
 
         optimizer.step()
 
         epoch_loss += loss.item()
+        
+        print("training step: ",i - start_index )
 
-    return epoch_loss / len(dataset)
+    return epoch_loss / len(dataset-start_index)
 
 
-def evaluate(model, dataset, trg_pad_index, batch_size, criterion):
+def evaluate(model, dataset, trg_pad_index, criterion):
+    print("start evaluate")
     model.eval()
     epoch_loss = 0
-    i = 0
-
+    
+    start_index=10
+    i = start_index
     with torch.no_grad():
         while i < len(dataset):
-            batch = get_batch(dataset, i, batch_size, trg_pad_index)
+            if i < 500:
+                batch_size=1
+            elif i < 1000:
+                batch_size=2
+            elif i <2000:
+                batch_size=10
+            elif i < 30000:
+                batch_size=20
+            else:
+                batch_size=40
+
+            batch = get_batch(dataset, i,batch_size, trg_pad_index)
             code, comment = batch
+            i += batch_size
 
             output = model(code, comment, 0)  # turn off the teacher forcing
 
@@ -89,10 +123,14 @@ def evaluate(model, dataset, trg_pad_index, batch_size, criterion):
 
             output = output[:, 1:, :].view(-1, output_dim)
             comment = comment[:, 1:].reshape(-1)
+            comment=torch.from_numpy(comment).cuda()
 
             loss = criterion(output, comment)
 
-            epoch_loss += loss
+            epoch_loss += loss.item()
+
+            print("evaluate step: ", i )
+
 
     return epoch_loss / len(dataset)
 
@@ -106,7 +144,7 @@ def epoch_time(start, end):
 
 if __name__ == "__main__":
 
-    root = './data'
+    root = '/home/cheng/Documents/projects/deep_comment_generation/data'
     train_data = pd.read_pickle(os.path.join(root, "test", "block.pkl"))
     val_data = pd.read_pickle(os.path.join(root, "valid", "block.pkl"))
     test_data = pd.read_pickle(os.path.join(root, "test", "block.pkl"))
@@ -122,12 +160,12 @@ if __name__ == "__main__":
 
     USE_GPU=True
     IDENTIFIER_DIM = identifier_word2vec.syn0.shape[1]
-    ENC_RNN_HID_DIM = 256
+    ENC_RNN_HID_DIM = 128
     IDENTIFIER_VOC_SIZE = len(identifier_embeddings)
     ENCODE_DIM = 128
-    BATCH_SIZE = 64
+    BATCH_SIZE = 5
 
-    DEC_RNN_HID_DIM = 256
+    DEC_RNN_HID_DIM = 128
     TRG_VOC_SIZE = len(token_embeddings)
     TRG_EMBEDDING_SIZE = token_word2vec.syn0.shape[1]
     TRG_PAD_IDX = token_word2vec.vocab["<pad>"].index
@@ -138,10 +176,11 @@ if __name__ == "__main__":
 
     best_valid_loss = float('inf')
 
-    encoder = Encoder(IDENTIFIER_DIM, ENC_RNN_HID_DIM, IDENTIFIER_VOC_SIZE, ENCODE_DIM, DEC_RNN_HID_DIM, BATCH_SIZE, True, identifier_embeddings)
-    attn = Attention(ENCODE_DIM, DEC_RNN_HID_DIM)
-    decoder = Decoder(TRG_EMBEDDING_SIZE, ENCODE_DIM, DEC_RNN_HID_DIM, TRG_VOC_SIZE, OUTPUT_DROPOUT, token_embeddings, attn)
+    encoder = Encoder(IDENTIFIER_DIM, ENC_RNN_HID_DIM, IDENTIFIER_VOC_SIZE, ENCODE_DIM, DEC_RNN_HID_DIM, True, identifier_embeddings)
+    attn = Attention(ENC_RNN_HID_DIM, DEC_RNN_HID_DIM)
+    decoder = Decoder(TRG_EMBEDDING_SIZE,ENC_RNN_HID_DIM, DEC_RNN_HID_DIM, TRG_VOC_SIZE, OUTPUT_DROPOUT, token_embeddings, attn)
     model = Seq2Seq(encoder, decoder, USE_GPU)
+    init_weights(model)
     
     if USE_GPU:
         model.cuda()
@@ -152,8 +191,8 @@ if __name__ == "__main__":
     for epoch in range(N_EPOCH):
         start_time = time.time()
 
-        train_loss = train(model, train_data, TRG_PAD_IDX, BATCH_SIZE, optimizer, criterion, CLIP)
-        valid_loss = evaluate(model, val_data, TRG_PAD_IDX, BATCH_SIZE, criterion)
+        train_loss = train(model, val_data, TRG_PAD_IDX, optimizer, criterion, CLIP)
+        valid_loss = evaluate(model, val_data, TRG_PAD_IDX, criterion)
         
         end_time = time.time()
         epoch_mins, epoch_secs = epoch_time(start_time, end_time)
@@ -168,6 +207,6 @@ if __name__ == "__main__":
     # load parameters from best validation loss and get result on the test dataset
 
     model.load_state_dict(torch.load('comment-generation-model.pt'))
-    test_loss = evaluate(model, test_data, TRG_PAD_IDX, BATCH_SIZE, criterion)
+    test_loss = evaluate(model, test_data, TRG_PAD_IDX, criterion)
 
     print(f'| Test Loss:{test_loss:.3f} | Test PPL:{math.exp(test_loss):7.3f} |')

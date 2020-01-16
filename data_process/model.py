@@ -4,33 +4,32 @@ import torch
 from torch.autograd import Variable
 import numpy as np
 import random
+from torch.nn import init
 
 
 class BatchTreeEncoder(nn.Module):
     def __init__(self,
-                 vocab_size, 
-                 embedding_dim, # ast node size
+                 vocab_size,
+                 embedding_dim,  # ast node size
                  encode_dim,  # ast embedding size
-                 batch_size,
                  use_gpu,
                  pretrained_weight=None):
         super(BatchTreeEncoder, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.encode_dim = encode_dim
         self.W_c = nn.Linear(embedding_dim, encode_dim)
-        self.W_l = nn.Linear(encode_dim, encode_dim)
-        self.W_r = nn.Linear(encode_dim, encode_dim)
+        # nn.init.normal_(self.W_c.weight,mean=0,std=1)
+        # self.W_l = nn.Linear(encode_dim, encode_dim)
+        # self.W_r = nn.Linear(encode_dim, encode_dim)
         self.activation = F.relu
         self.stop = -1
-        self.batch_size = batch_size
         self.use_gpu = use_gpu
         self.node_list = []
         self.th = torch.cuda if use_gpu else torch
         self.batch_node = None
         # pretrained  embedding
         if pretrained_weight is not None:
-            self.embedding.weight.data.copy_(
-                torch.from_numpy(pretrained_weight))
+            self.embedding.weight.data.copy_(torch.from_numpy(pretrained_weight))
             # self.embedding.weight.requires_grad = False
 
     def create_tensor(self, tensor):
@@ -42,9 +41,7 @@ class BatchTreeEncoder(nn.Module):
         size = len(node)
         if not size:
             return None
-        batch_current = self.create_tensor(
-            Variable(torch.zeros(size, self.encode_dim)))
-
+        batch_current = self.create_tensor(Variable(torch.zeros(size, self.encode_dim)))
         index, children_index = [], []
         current_node, children = [], []
         for i in range(size):
@@ -94,12 +91,11 @@ class BatchTreeEncoder(nn.Module):
 
 class Encoder(nn.Module):
     def __init__(self,
-                 embedding_dim, # ast node embedding
-                 rnn_hidden_dim, # RNN hidden dim
-                 vocab_size, 
+                 embedding_dim,  # ast node embedding
+                 rnn_hidden_dim,  # RNN hidden dim
+                 vocab_size,
                  encode_dim,  # ast embedding
                  decode_dim,
-                 batch_size,
                  use_gpu=True,
                  pretrained_weight=None):
         super(Encoder, self).__init__()
@@ -107,12 +103,11 @@ class Encoder(nn.Module):
         self.rnn_hidden_dim = rnn_hidden_dim
         self.num_layers = 1
         self.gpu = use_gpu
-        self.batch_size = batch_size
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
         self.encode_dim = encode_dim
         self.encoder = BatchTreeEncoder(self.vocab_size, self.embedding_dim,
-                                        self.encode_dim, self.batch_size,
+                                        self.encode_dim,
                                         self.gpu, pretrained_weight)
         # gru
         self.bigru = nn.GRU(self.encode_dim,
@@ -122,27 +117,10 @@ class Encoder(nn.Module):
                             batch_first=True)
         # linear
         self.fc = nn.Linear(rnn_hidden_dim * 2, decode_dim)
+        # init.normal(self.fc.weight,mean=0,std=1)
         # hidden
-        self.hidden = self.init_hidden()
+        # self.hidden = self.init_hidden()
         self.dropout = nn.Dropout(0.2)
-
-    def init_hidden(self):
-        if self.gpu is True:
-            if isinstance(self.bigru, nn.LSTM):
-                h0 = Variable(
-                    torch.zeros(self.num_layers * 2, self.batch_size,
-                                self.rnn_hidden_dim).cuda())
-                c0 = Variable(
-                    torch.zeros(self.num_layers * 2, self.batch_size,
-                                self.rnn_hidden_dim).cuda())
-                return h0, c0
-            return Variable(
-                torch.zeros(self.num_layers * 2, self.batch_size,
-                            self.rnn_hidden_dim)).cuda()
-        else:
-            return Variable(
-                torch.zeros(self.num_layers * 2, self.batch_size,
-                            self.rnn_hidden_dim))
 
     def get_zeros(self, num):
         zeros = Variable(torch.zeros(num, self.encode_dim))
@@ -151,16 +129,36 @@ class Encoder(nn.Module):
         return zeros
 
     def forward(self, x):
+
+        def init_hidden(batch_size):  # init rnn hidden
+            if self.gpu is True:
+                if isinstance(self.bigru, nn.LSTM):
+                    h0 = Variable(
+                        torch.zeros(self.num_layers * 2, batch_size,
+                                    self.rnn_hidden_dim).cuda())
+                    c0 = Variable(
+                        torch.zeros(self.num_layers * 2, batch_size,
+                                    self.rnn_hidden_dim).cuda())
+                    return h0, c0
+                return Variable(
+                    torch.zeros(self.num_layers * 2, batch_size,
+                                self.rnn_hidden_dim)).cuda()
+            else:
+                return Variable(
+                    torch.zeros(self.num_layers * 2, batch_size,
+                                self.rnn_hidden_dim))
+
         src_lens = [len(item) for item in x]
+        batch_size = len(x)
         max_len = max(src_lens)
         encodes = []
-        for i in range(self.batch_size):
+        for i in range(batch_size):
             for j in range(src_lens[i]):
                 encodes.append(x[i][j])
 
         encodes = self.encoder(encodes, sum(src_lens))
         seq, start, end = [], 0, 0
-        for i in range(self.batch_size):
+        for i in range(batch_size):
             end += src_lens[i]
             if max_len - src_lens[i]:
                 seq.append(self.get_zeros(max_len - src_lens[i]))
@@ -168,11 +166,11 @@ class Encoder(nn.Module):
             start = end
         encodes = torch.cat(seq)
         # encodes = [batch_size, max_len, encoder_dim])
-        encodes = encodes.view(self.batch_size, max_len, -1)
+        encodes = encodes.view(batch_size, max_len, -1)
 
         packed_encodes = nn.utils.rnn.pack_padded_sequence(encodes, src_lens, batch_first=True, enforce_sorted=False)
         # hidden = [num_layer*2,batch, rnn_hidden_dim]
-        packed_output, hidden = self.bigru(packed_encodes, self.hidden)
+        packed_output, hidden = self.bigru(packed_encodes, init_hidden(batch_size))
         outputs, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True)  # outpus = [batch, max_len, rnn_hidden_dim * 2]
 
         # init decoder hidden is final hidden state of the forwards and backwards
@@ -181,8 +179,7 @@ class Encoder(nn.Module):
         backward = hidden[1, :, :]
         # combination=torch.cat((forward,backward),dim=-1)
 
-        hidden = torch.tanh(self.fc(torch.cat((forward,backward), dim=-1)))
-        
+        hidden = torch.tanh(self.fc(torch.cat((forward, backward), dim=-1)))
 
         return outputs, hidden, src_lens
 
@@ -190,10 +187,12 @@ class Encoder(nn.Module):
 class Attention(nn.Module):
     def __init__(self, encoder_hidden_dim, decoder_dim):
         super().__init__()
-        self.encoder_hidden_dim=encoder_hidden_dim
-        self.decoder_dim=decoder_dim
+        self.encoder_hidden_dim = encoder_hidden_dim
+        self.decoder_dim = decoder_dim
         self.attention = nn.Linear(((encoder_hidden_dim * 2) + decoder_dim),
                                    decoder_dim)
+
+        # nn.init.normal_(self.attention.weight,mean=0,std=1)
         self.v = nn.Parameter(torch.rand(decoder_dim))
 
     def forward(self, hidden, encoder_outputs, mask):
@@ -206,15 +205,13 @@ class Attention(nn.Module):
         # hidden = [batch, max_len, decoder_dim]
         hidden = hidden.unsqueeze(1).repeat(1, max_len, 1)
 
-      
         energy = torch.tanh(self.attention(torch.cat((hidden, encoder_outputs), dim=-1)))
-        energy =energy.permute(0,2,1)    # energy = [batch,decoder_dim,max_len]
+        energy = energy.permute(0, 2, 1)    # energy = [batch,decoder_dim,max_len]
 
-        v = self.v.repeat(batch_size,1).unsqueeze(1)  # v = [batch, 1, decoder_dim]
+        v = self.v.repeat(batch_size, 1).unsqueeze(1)  # v = [batch, 1, decoder_dim]
 
         attention = torch.bmm(v, energy).squeeze(1)  # attention = [batch, max_len]
-        attention = attention.masked_fill(mask == 0,-1e10)
-
+        attention = attention.masked_fill(mask == 0, -1e10)
 
         return F.softmax(attention, dim=1)
 
@@ -231,30 +228,14 @@ class Decoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.rnn = nn.GRU((encode_dim * 2) + embedding_dim, self.decode_dim, batch_first=True)
         self.fc_out = nn.Linear((encode_dim * 2) + decode_dim + embedding_dim, output_dim)
+        # nn.init.normal_(self.fc_out.weight ,mean=0, std=1)
+
 
         # pretrained  embedding
         if pretrained_weight is not None:
             self.embedding.weight.data.copy_(
                 torch.from_numpy(pretrained_weight))
             self.embedding.weight.requires_grad = True
-
-    def init_hidden(self):
-        if self.gpu is True:
-            if isinstance(self.rnn, nn.LSTM):
-                h0 = Variable(
-                    torch.zeros(self.num_layers, self.batch_size,
-                                self.decode_dim).cuda())
-                c0 = Variable(
-                    torch.zeros(self.num_layers, self.batch_size,
-                                self.decode_dim).cuda())
-                return h0, c0
-            return Variable(
-                torch.zeros(self.num_layers, self.batch_size,
-                            self.decode_dim)).cuda()
-        else:
-            return Variable(
-                torch.zeros(self.num_layers, self.batch_size,
-                            self.decode_dim))
 
     def forward(self, input, hidden, encoder_outputs, mask):
         # input = [batch]
@@ -273,11 +254,11 @@ class Decoder(nn.Module):
 
         rnn_input = torch.cat((embeded, weighted), dim=2)  # rnn_input = [batch, 1 , embedding_dim + encode_dim * 2]
 
-        hidden= hidden.unsqueeze(1).permute(1,0,2) # hidden = [1,batch, decode_dim]
-       
+        hidden = hidden.unsqueeze(1).permute(1, 0, 2)  # hidden = [1,batch, decode_dim]
+
         output, hidden = self.rnn(rnn_input, hidden)  # output = [batch, 1, decode_dim]
-        
-        hidden=hidden.permute(1,0,2)
+
+        hidden = hidden.permute(1, 0, 2)
         assert (output == hidden).all()  # this also means that output = hidden
 
         embeded = embeded.squeeze(1)  # embeded = [batch, embedding_dim]
@@ -319,7 +300,7 @@ class Seq2Seq(nn.Module):
 
         # tensor to store decoder output
         if self.use_gpu:
-            outputs = torch.zeros(trg_len,batch_size, trg_vocab_size).cuda()
+            outputs = torch.zeros(trg_len, batch_size, trg_vocab_size).cuda()
 
         # encoder_outputs is all hidden states of the input sequence, back and forward
         # hidden is the final forward and backward hidden states, pass through a linear layer
@@ -327,17 +308,17 @@ class Seq2Seq(nn.Module):
         encoder_outputs, hidden, src_lens = self.encoder(src)  # encoder)_outputs = [batch,src_len,]
 
         # first input to decoder is the <sos> tokens
-        if self.use_gpu==True:
-            input =torch.tensor(trg[:, 0]).cuda()  # input = [batch, 1]
+        if self.use_gpu == True:
+            input = torch.tensor(trg[:, 0]).cuda()  # input = [batch, 1]
         else:
-            input =torch.tensor(trg[:, 0])
+            input = torch.tensor(trg[:, 0])
 
         mask = create_mask(src_lens)  # mask = [batch, src_len]
 
         for t in range(1, trg_len):
             # insert input token embedding ,previous states,encoder outputs and mask
             output, hidden, _ = self.decoder(input, hidden, encoder_outputs, mask)
-         
+
             # place predictions in a tensor holding predictions for each token
             outputs[t] = output
 
@@ -349,6 +330,6 @@ class Seq2Seq(nn.Module):
 
             # if teacher forcing ,use actual next token as next input
             # if not ,use predicted token
-            input = torch.tensor(trg[:,t]).cuda() if teacher_force else top1
+            input = torch.tensor(trg[:, t]).cuda() if teacher_force else top1
 
         return outputs
