@@ -8,9 +8,9 @@ import random
 
 class BatchTreeEncoder(nn.Module):
     def __init__(self,
-                 vocab_size,
-                 embedding_dim,
-                 encode_dim,
+                 vocab_size, 
+                 embedding_dim, # ast node size
+                 encode_dim,  # ast embedding size
                  batch_size,
                  use_gpu,
                  pretrained_weight=None):
@@ -65,7 +65,7 @@ class BatchTreeEncoder(nn.Module):
                 batch_index[i] = -1
 
             batch_current = self.W_c(batch_current.index_copy(0, Variable(self.th.LongTensor(index)),
-                                                          self.embedding(Variable(self.th.LongTensor(current_node)))).cuda())
+                                                              self.embedding(Variable(self.th.LongTensor(current_node)))).cuda())
 
         for c in range(len(children)):
             zeros = self.create_tensor(
@@ -94,17 +94,17 @@ class BatchTreeEncoder(nn.Module):
 
 class Encoder(nn.Module):
     def __init__(self,
-                 embedding_dim,
-                 hidden_dim,
-                 vocab_size,
-                 encode_dim,
+                 embedding_dim, # ast node embedding
+                 rnn_hidden_dim, # RNN hidden dim
+                 vocab_size, 
+                 encode_dim,  # ast embedding
                  decode_dim,
                  batch_size,
                  use_gpu=True,
                  pretrained_weight=None):
         super(Encoder, self).__init__()
         self.stop = [vocab_size - 1]
-        self.hidden_dim = hidden_dim
+        self.rnn_hidden_dim = rnn_hidden_dim
         self.num_layers = 1
         self.gpu = use_gpu
         self.batch_size = batch_size
@@ -116,12 +116,12 @@ class Encoder(nn.Module):
                                         self.gpu, pretrained_weight)
         # gru
         self.bigru = nn.GRU(self.encode_dim,
-                            self.hidden_dim,
+                            self.rnn_hidden_dim,
                             num_layers=self.num_layers,
                             bidirectional=True,
                             batch_first=True)
         # linear
-        self.fc = nn.Linear(encode_dim * 2, decode_dim)
+        self.fc = nn.Linear(rnn_hidden_dim * 2, decode_dim)
         # hidden
         self.hidden = self.init_hidden()
         self.dropout = nn.Dropout(0.2)
@@ -131,18 +131,18 @@ class Encoder(nn.Module):
             if isinstance(self.bigru, nn.LSTM):
                 h0 = Variable(
                     torch.zeros(self.num_layers * 2, self.batch_size,
-                                self.hidden_dim).cuda())
+                                self.rnn_hidden_dim).cuda())
                 c0 = Variable(
                     torch.zeros(self.num_layers * 2, self.batch_size,
-                                self.hidden_dim).cuda())
+                                self.rnn_hidden_dim).cuda())
                 return h0, c0
             return Variable(
                 torch.zeros(self.num_layers * 2, self.batch_size,
-                            self.hidden_dim)).cuda()
+                            self.rnn_hidden_dim)).cuda()
         else:
             return Variable(
                 torch.zeros(self.num_layers * 2, self.batch_size,
-                            self.hidden_dim))
+                            self.rnn_hidden_dim))
 
     def get_zeros(self, num):
         zeros = Variable(torch.zeros(num, self.encode_dim))
@@ -169,16 +169,20 @@ class Encoder(nn.Module):
         encodes = torch.cat(seq)
         # encodes = [batch_size, max_len, encoder_dim])
         encodes = encodes.view(self.batch_size, max_len, -1)
-        packed_encodes = nn.utils.rnn.pack_padded_sequence(encodes, src_lens)
-        # hidden = [batch, num_layer*2, hidden_dim]
+
+        packed_encodes = nn.utils.rnn.pack_padded_sequence(encodes, src_lens, batch_first=True, enforce_sorted=False)
+        # hidden = [num_layer*2,batch, rnn_hidden_dim]
         packed_output, hidden = self.bigru(packed_encodes, self.hidden)
-        outputs, _ = nn.utils.rnn.pad_packed_sequence(
-            packed_output)  # outpus = [batch, max_len, hidden_dim * 2]
+        outputs, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True)  # outpus = [batch, max_len, rnn_hidden_dim * 2]
 
         # init decoder hidden is final hidden state of the forwards and backwards
         # hidden = [batch, decode_dim]
-        hidden = torch.tanh(
-            self.fc(torch.cat((hidden[:, -2, :], hidden[:, -1, :]), dim=-1)))
+        forward = hidden[0, :, :]
+        backward = hidden[1, :, :]
+        # combination=torch.cat((forward,backward),dim=-1)
+
+        hidden = torch.tanh(self.fc(torch.cat((forward,backward), dim=-1)))
+        
 
         return outputs, hidden, src_lens
 
@@ -186,7 +190,8 @@ class Encoder(nn.Module):
 class Attention(nn.Module):
     def __init__(self, encoder_hidden_dim, decoder_dim):
         super().__init__()
-
+        self.encoder_hidden_dim=encoder_hidden_dim
+        self.decoder_dim=decoder_dim
         self.attention = nn.Linear(((encoder_hidden_dim * 2) + decoder_dim),
                                    decoder_dim)
         self.v = nn.Parameter(torch.rand(decoder_dim))
@@ -201,17 +206,15 @@ class Attention(nn.Module):
         # hidden = [batch, max_len, decoder_dim]
         hidden = hidden.unsqueeze(1).repeat(1, max_len, 1)
 
-        # energy = [batch, max_len, decoder_dim]
-        energy = torch.tanh(
-            self.attention(torch.cat((hidden, encoder_outputs), dim=2)))
+      
+        energy = torch.tanh(self.attention(torch.cat((hidden, encoder_outputs), dim=-1)))
+        energy =energy.permute(0,2,1)    # energy = [batch,decoder_dim,max_len]
 
-        v = self.v.repeat(batch_size,
-                          1).unsqueeze(1)  # v = [batch, 1, decoder_dim]
+        v = self.v.repeat(batch_size,1).unsqueeze(1)  # v = [batch, 1, decoder_dim]
 
-        attention = torch.bmm(v, energy).squeeze(
-            1)  # attention = [batch, max_len]
+        attention = torch.bmm(v, energy).squeeze(1)  # attention = [batch, max_len]
+        attention = attention.masked_fill(mask == 0,-1e10)
 
-        attention = attention.masked_fill(mask == 0, -1e10)
 
         return F.softmax(attention, dim=1)
 
@@ -270,12 +273,15 @@ class Decoder(nn.Module):
 
         rnn_input = torch.cat((embeded, weighted), dim=2)  # rnn_input = [batch, 1 , embedding_dim + encode_dim * 2]
 
-        output, hidden = self.rnn(rnn_input, hidden.unsqueeze(1))  # output = [batch, 1, decode_dim], hidden = [batch, 1, decode_dim]
-
+        hidden= hidden.unsqueeze(1).permute(1,0,2) # hidden = [1,batch, decode_dim]
+       
+        output, hidden = self.rnn(rnn_input, hidden)  # output = [batch, 1, decode_dim]
+        
+        hidden=hidden.permute(1,0,2)
         assert (output == hidden).all()  # this also means that output = hidden
 
-        embeded = embeded.sequeeze(1)  # embeded = [batch, embedding_dim]
-        output = output.sequeeze(1)  # output = [batch, decode_dim]
+        embeded = embeded.squeeze(1)  # embeded = [batch, embedding_dim]
+        output = output.squeeze(1)  # output = [batch, decode_dim]
         weighted = weighted.squeeze(1)  # weight = [batch, encoder_hidden_dim * 2]
 
         prediction = self.fc_out(torch.cat((embeded, output, weighted), dim=1))  # prediction = [batch, output_dim]
@@ -302,7 +308,8 @@ class Seq2Seq(nn.Module):
                 mask = np.concatenate((mask, row))
 
             mask = mask.reshape(len(src_lens), max_len)
-            return mask
+
+            return torch.from_numpy(mask).cuda()
 
         # src = [batch, None]
         # trg = [batch, trg_len]
@@ -312,7 +319,7 @@ class Seq2Seq(nn.Module):
 
         # tensor to store decoder output
         if self.use_gpu:
-            outputs = torch.zeros(batch_size, trg_len, trg_vocab_size).cuda()
+            outputs = torch.zeros(trg_len,batch_size, trg_vocab_size).cuda()
 
         # encoder_outputs is all hidden states of the input sequence, back and forward
         # hidden is the final forward and backward hidden states, pass through a linear layer
@@ -320,13 +327,17 @@ class Seq2Seq(nn.Module):
         encoder_outputs, hidden, src_lens = self.encoder(src)  # encoder)_outputs = [batch,src_len,]
 
         # first input to decoder is the <sos> tokens
-        input = trg[:, 0]  # input = [batch, 1]
+        if self.use_gpu==True:
+            input =torch.tensor(trg[:, 0]).cuda()  # input = [batch, 1]
+        else:
+            input =torch.tensor(trg[:, 0])
 
         mask = create_mask(src_lens)  # mask = [batch, src_len]
 
         for t in range(1, trg_len):
             # insert input token embedding ,previous states,encoder outputs and mask
             output, hidden, _ = self.decoder(input, hidden, encoder_outputs, mask)
+         
             # place predictions in a tensor holding predictions for each token
             outputs[t] = output
 
@@ -338,6 +349,6 @@ class Seq2Seq(nn.Module):
 
             # if teacher forcing ,use actual next token as next input
             # if not ,use predicted token
-            input = trg[t] if teacher_force else top1
+            input = torch.tensor(trg[:,t]).cuda() if teacher_force else top1
 
         return outputs
